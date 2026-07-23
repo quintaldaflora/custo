@@ -755,6 +755,52 @@
     </div>
   </div>
 
+  <!-- ═══════ PAGE: DETALHE DA RECEITA ═══════ -->
+  <div class="page" id="page-detalhe">
+    <div class="section-head">
+      <button class="btn btn-outline btn-sm" onclick="switchPage('home')" style="margin-bottom:12px;">← Voltar</button>
+      <h2 id="detalhe-nome">Receita</h2>
+      <p id="detalhe-categoria">—</p>
+    </div>
+
+    <div class="card">
+      <div class="card-inner">
+        <div class="card-title" style="margin-bottom:10px;">Ingredientes usados</div>
+        <div id="detalhe-ingredientes"></div>
+      </div>
+    </div>
+
+    <div class="result-card" style="margin-top:0;">
+      <div class="result-card-title">
+        <div class="ai-dot"></div>
+        Resumo da ficha
+      </div>
+      <div class="result-grid">
+        <div class="result-metric">
+          <div class="result-label">Custo total</div>
+          <div class="result-value">R$ <span id="detalhe-total">—</span></div>
+        </div>
+        <div class="result-metric">
+          <div class="result-label">Custo por porção</div>
+          <div class="result-value">R$ <span id="detalhe-unit">—</span></div>
+        </div>
+        <div class="result-metric">
+          <div class="result-label">Rendimento</div>
+          <div class="result-value"><span id="detalhe-yield">—</span> <span class="result-unit">und.</span></div>
+        </div>
+        <div class="result-metric">
+          <div class="result-label">Preço de venda</div>
+          <div class="result-value highlight">R$ <span id="detalhe-price">—</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div style="padding: 0 20px 20px;">
+      <button class="btn btn-primary" onclick="editRecipeFromDetail()">✎ Editar esta receita</button>
+      <button class="btn btn-danger" style="width:100%; margin-top:10px;" onclick="deleteRecipeFromDetail()">🗑 Excluir esta receita</button>
+    </div>
+  </div>
+
   <!-- ═══════ PAGE: PERFIL ═══════ -->
   <div class="page" id="page-perfil">
     <div class="section-head">
@@ -883,12 +929,103 @@ async function loadFichas() {
   updateHomePage();
 }
 
+// ── VER DETALHE DA RECEITA ──
+async function viewRecipe(recipeId) {
+  switchPage('detalhe');
+  document.getElementById('detalhe-nome').textContent = 'Carregando...';
+  document.getElementById('detalhe-ingredientes').innerHTML = '';
+  try {
+    const detail = await apiGet(`recipe_detail&recipeId=${recipeId}`);
+    if (detail.error) { showToast(detail.error); switchPage('home'); return; }
+    window._currentDetail = detail;
+    renderRecipeDetail(detail);
+  } catch (e) {
+    showToast('Erro ao carregar a receita');
+    switchPage('home');
+  }
+}
+
+function renderRecipeDetail(detail) {
+  const r = detail.recipe;
+  document.getElementById('detalhe-nome').textContent = r.nome;
+  document.getElementById('detalhe-categoria').textContent = r.categoria;
+
+  document.getElementById('detalhe-ingredientes').innerHTML = detail.ingredientes.map(ing => `
+    <div class="ingredient-item">
+      <div class="ing-info">
+        <div class="ing-name">${ing.nome}</div>
+        <div class="ing-detail">${ing.qty}${ing.unit}</div>
+      </div>
+      <span class="ing-cost">R$ ${ing.custoTotal.toFixed(2)}</span>
+    </div>
+  `).join('');
+
+  const custoIngredientes = detail.ingredientes.reduce((s, i) => s + i.custoTotal, 0);
+  const custoMaoObra = r.laborHour * r.laborHrs;
+  const custoOperacional = (custoIngredientes + custoMaoObra) * r.overhead;
+  const custoTotal = custoIngredientes + custoMaoObra + custoOperacional;
+  const custoPorPorcao = custoTotal / r.rendimento;
+  const precoVenda = custoPorPorcao * (1 + r.margem);
+
+  document.getElementById('detalhe-total').textContent = custoTotal.toFixed(2);
+  document.getElementById('detalhe-unit').textContent = custoPorPorcao.toFixed(2);
+  document.getElementById('detalhe-yield').textContent = r.rendimento;
+  document.getElementById('detalhe-price').textContent = precoVenda.toFixed(2);
+}
+
+// ── EDITAR RECEITA JÁ SALVA ──
+function editRecipeFromDetail() {
+  const detail = window._currentDetail;
+  if (!detail) return;
+  const r = detail.recipe;
+
+  document.getElementById('recipe-name').value = r.nome;
+  document.getElementById('recipe-category').value = r.categoria;
+  document.getElementById('recipe-yield').value = r.rendimento;
+  document.getElementById('margin-slider').value = Math.round(r.margem * 100);
+  updateMarginDisplay(Math.round(r.margem * 100));
+  document.getElementById('labor-hour').value = r.laborHour;
+  document.getElementById('labor-hrs').value = r.laborHrs;
+  document.getElementById('overhead').value = Math.round(r.overhead * 100);
+
+  ingredients = detail.ingredientes.map(ing => ({
+    insumoId: ing.insumoId, name: ing.nome, qty: ing.qty, unit: ing.unit,
+    costPer: ing.custoUnit, totalCost: ing.custoTotal
+  }));
+  renderIngredients();
+
+  window._editingRecipeId = r.id;
+  document.getElementById('result-section').style.display = 'none';
+  showToast('Editando "' + r.nome + '" — ajuste e calcule de novo');
+  switchPage('calcular');
+}
+
+// ── EXCLUIR RECEITA SALVA ──
+async function deleteRecipeFromDetail() {
+  const detail = window._currentDetail;
+  if (!detail) return;
+  const r = detail.recipe;
+
+  if (!confirm(`Excluir a receita "${r.nome}"? Essa ação não pode ser desfeita.`)) return;
+
+  try {
+    await apiPost({ action: 'delete_recipe', recipeId: r.id });
+    showToast('Receita excluída! ✓');
+    window._currentDetail = null;
+    await loadFichas();
+    switchPage('home');
+  } catch (e) {
+    showToast('Erro ao excluir. Tente novamente.');
+  }
+}
+
 // ── NAVIGATION ──
 function switchPage(page) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('page-' + page).classList.add('active');
-  document.getElementById('nav-' + page).classList.add('active');
+  const navBtn = document.getElementById('nav-' + page);
+  if (navBtn) navBtn.classList.add('active');
   if (page === 'home') updateHomePage();
 }
 
@@ -1068,29 +1205,34 @@ async function saveRecipe() {
   if (!data) { showToast('Calcule primeiro!'); return; }
   if (ingredients.length === 0) { showToast('Adicione ao menos 1 ingrediente'); return; }
 
+  const isEditing = !!window._editingRecipeId;
   const saveBtn = document.querySelector('#result-section .btn-primary');
-  saveBtn.textContent = 'Salvando na planilha...';
+  saveBtn.textContent = isEditing ? 'Atualizando na planilha...' : 'Salvando na planilha...';
   saveBtn.disabled = true;
 
-  try {
-    await apiPost({
-      action: 'save_recipe',
-      nome: name,
-      categoria: category,
-      rendimento: yieldVal,
-      margem: margin / 100,
-      laborHour, laborHrs,
-      overhead: overhead / 100,
-      ingredientes: ingredients.map(i => ({ insumoId: i.insumoId, qtd: i.qty }))
-    });
+  const payload = {
+    nome: name,
+    categoria: category,
+    rendimento: yieldVal,
+    margem: margin / 100,
+    laborHour, laborHrs,
+    overhead: overhead / 100,
+    ingredientes: ingredients.map(i => ({ insumoId: i.insumoId, qtd: i.qty }))
+  };
+  if (isEditing) { payload.action = 'update_recipe'; payload.recipeId = window._editingRecipeId; }
+  else { payload.action = 'save_recipe'; }
 
-    showToast('Ficha salva na planilha! ✓');
+  try {
+    await apiPost(payload);
+
+    showToast(isEditing ? 'Ficha atualizada na planilha! ✓' : 'Ficha salva na planilha! ✓');
     await loadFichas();
 
     // Reset
     document.getElementById('recipe-name').value = '';
     document.getElementById('recipe-yield').value = '';
     ingredients = [];
+    window._editingRecipeId = null;
     renderIngredients();
     document.getElementById('result-section').style.display = 'none';
   } catch (e) {
@@ -1123,11 +1265,11 @@ function updateHomePage() {
   }
 
   container.innerHTML = savedRecipes.map((r, i) => `
-    <div class="recipe-list-item">
+    <div class="recipe-list-item" onclick="viewRecipe(${r.id})">
       <div class="recipe-emoji">${r.emoji}</div>
       <div class="recipe-info">
         <div class="recipe-name">${r.name}</div>
-        <div class="recipe-meta">${r.category} · ${r.yield} und. · ${r.date}</div>
+        <div class="recipe-meta">${r.yield} und.</div>
       </div>
       <div>
         <div class="recipe-price">R$ ${r.price.toFixed(2)}</div>
