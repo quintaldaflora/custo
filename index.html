@@ -611,40 +611,21 @@
         </div>
 
         <div class="form-group">
-          <label class="form-label">Ingrediente</label>
-          <input class="form-input" type="text" id="ing-name" placeholder="Ex: Farinha de trigo">
+          <label class="form-label">Insumo cadastrado</label>
+          <select class="form-input" id="ing-select">
+            <option value="">Selecione um insumo...</option>
+          </select>
         </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">Qtd. usada</label>
-            <input class="form-input" type="number" id="ing-qty" placeholder="Ex: 300" min="0" step="0.1">
-          </div>
-          <div class="form-group">
-            <label class="form-label">Unidade</label>
-            <select class="form-input" id="ing-unit">
-              <option value="g">g</option>
-              <option value="kg">kg</option>
-              <option value="ml">ml</option>
-              <option value="L">L</option>
-              <option value="un">un</option>
-              <option value="colher">colher</option>
-              <option value="xícara">xícara</option>
-            </select>
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">Preço pago (R$)</label>
-            <input class="form-input" type="number" id="ing-price" placeholder="Ex: 6,50" step="0.01" min="0">
-          </div>
-          <div class="form-group">
-            <label class="form-label">Qtd. embalagem</label>
-            <input class="form-input" type="number" id="ing-pack" placeholder="Ex: 1000" min="0">
-          </div>
+        <div class="form-group">
+          <label class="form-label">Qtd. usada nesta receita</label>
+          <input class="form-input" type="number" id="ing-qty" placeholder="Ex: 300" min="0" step="0.1">
         </div>
         <button class="btn btn-outline btn-sm" onclick="addIngredient()" style="width:100%;">
           + Adicionar ingrediente
         </button>
+        <p style="font-size:11px; color:var(--ink-muted); margin-top:8px;">
+          Não achou o insumo? Cadastre na aba <strong>Insumos</strong> primeiro.
+        </p>
 
         <div id="ingredients-list" style="margin-top:12px;"></div>
       </div>
@@ -851,10 +832,56 @@
 <div class="toast" id="toast"></div>
 
 <script>
+// ── API (Google Apps Script conectado à sua planilha) ──
+const API_URL = 'https://script.google.com/macros/s/AKfycbwSj_hSc8BwZrp688OqZmLyd-Dlfmev4AH6pqABWTUb8u85RVwF6dT6FXwWZmrwDWh_/exec';
+
+async function apiGet(action) {
+  const res = await fetch(`${API_URL}?action=${action}`);
+  return res.json();
+}
+
+async function apiPost(body) {
+  // Content-Type text/plain evita o preflight CORS que o Apps Script não responde
+  const res = await fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(body)
+  });
+  return res.json();
+}
+
 // ── STATE ──
-let ingredients = [];  // {name, qty, unit, price, pack, costPer}
+let ingredients = [];  // {insumoId, name, qty, unit, costPer, totalCost}
 let stockItems = [];
 let savedRecipes = [];
+
+// ── LOAD DATA FROM SHEET ──
+async function loadInsumos() {
+  try {
+    const data = await apiGet('insumos');
+    stockItems = (data || []).map(i => ({
+      id: i.id, name: i.nome, price: i.preco, qty: i.qtd, unit: i.unidade, unitPrice: i.custoUnit
+    }));
+  } catch (e) {
+    showToast('Não foi possível carregar os insumos da planilha');
+  }
+  renderStock();
+  populateIngredientSelect();
+}
+
+async function loadFichas() {
+  try {
+    const data = await apiGet('fichas');
+    savedRecipes = (data || []).map(f => ({
+      id: f.id, name: f.nome, category: '', emoji: '🍳',
+      price: f.precoVenda, unit: f.custoPorPorcao, total: f.custoTotal,
+      yield: f.rendimento, date: ''
+    }));
+  } catch (e) {
+    showToast('Não foi possível carregar as fichas da planilha');
+  }
+  updateHomePage();
+}
 
 // ── NAVIGATION ──
 function switchPage(page) {
@@ -870,28 +897,34 @@ function updateMarginDisplay(val) {
   document.getElementById('margin-display').textContent = val + '%';
 }
 
+// ── INGREDIENT SELECT (populado com os insumos cadastrados) ──
+function populateIngredientSelect() {
+  const sel = document.getElementById('ing-select');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">Selecione um insumo...</option>' +
+    stockItems.map(s => `<option value="${s.id}">${s.name} (R$ ${s.unitPrice.toFixed(4)}/${s.unit})</option>`).join('');
+  if (current) sel.value = current;
+}
+
 // ── ADD INGREDIENT TO RECIPE ──
 function addIngredient() {
-  const name  = document.getElementById('ing-name').value.trim();
-  const qty   = parseFloat(document.getElementById('ing-qty').value);
-  const unit  = document.getElementById('ing-unit').value;
-  const price = parseFloat(document.getElementById('ing-price').value);
-  const pack  = parseFloat(document.getElementById('ing-pack').value);
+  const insumoId = document.getElementById('ing-select').value;
+  const qty = parseFloat(document.getElementById('ing-qty').value);
 
-  if (!name || isNaN(qty) || isNaN(price) || isNaN(pack) || pack === 0) {
-    showToast('Preencha todos os campos do ingrediente');
-    return;
-  }
+  if (!insumoId) { showToast('Selecione um insumo cadastrado'); return; }
+  if (isNaN(qty) || qty <= 0) { showToast('Informe a quantidade usada'); return; }
 
-  const costPer = price / pack; // R$ por unidade base
+  const stock = stockItems.find(s => String(s.id) === String(insumoId));
+  if (!stock) { showToast('Insumo não encontrado'); return; }
+
+  const costPer = stock.unitPrice;
   const totalCost = costPer * qty;
 
-  ingredients.push({ name, qty, unit, price, pack, costPer, totalCost });
+  ingredients.push({ insumoId: stock.id, name: stock.name, qty, unit: stock.unit, costPer, totalCost });
   renderIngredients();
 
-  // Clear
-  ['ing-name','ing-qty','ing-price','ing-pack'].forEach(id => document.getElementById(id).value = '');
-  document.getElementById('ing-unit').value = 'g';
+  document.getElementById('ing-select').value = '';
+  document.getElementById('ing-qty').value = '';
 }
 
 function removeIngredient(idx) {
@@ -1021,34 +1054,51 @@ function showResults(data) {
   window._lastResult = data;
 }
 
-// ── SAVE RECIPE ──
-function saveRecipe() {
+// ── SAVE RECIPE (grava na planilha via Apps Script) ──
+async function saveRecipe() {
   const name = document.getElementById('recipe-name').value.trim() || 'Receita sem nome';
   const category = document.getElementById('recipe-category').value;
+  const yieldVal = parseInt(document.getElementById('recipe-yield').value) || 1;
+  const margin = parseInt(document.getElementById('margin-slider').value);
+  const laborHour = parseFloat(document.getElementById('labor-hour').value) || 0;
+  const laborHrs  = parseFloat(document.getElementById('labor-hrs').value) || 0;
+  const overhead  = parseFloat(document.getElementById('overhead').value) || 0;
+
   const data = window._lastResult;
   if (!data) { showToast('Calcule primeiro!'); return; }
+  if (ingredients.length === 0) { showToast('Adicione ao menos 1 ingrediente'); return; }
 
-  const emojis = {'Bolos e tortas':'🎂','Salgados':'🥐','Doces':'🍬','Prato principal':'🍽️','Bebidas':'🥤','Outros':'🍳'};
-  const emoji = emojis[category] || '🍳';
+  const saveBtn = document.querySelector('#result-section .btn-primary');
+  saveBtn.textContent = 'Salvando na planilha...';
+  saveBtn.disabled = true;
 
-  savedRecipes.push({
-    name, category, emoji,
-    price: data.price,
-    unit: data.unit,
-    total: data.total,
-    yield: data.yield,
-    date: new Date().toLocaleDateString('pt-BR')
-  });
+  try {
+    await apiPost({
+      action: 'save_recipe',
+      nome: name,
+      categoria: category,
+      rendimento: yieldVal,
+      margem: margin / 100,
+      laborHour, laborHrs,
+      overhead: overhead / 100,
+      ingredientes: ingredients.map(i => ({ insumoId: i.insumoId, qtd: i.qty }))
+    });
 
-  showToast('Ficha salva com sucesso! ✓');
-  updateHomePage();
+    showToast('Ficha salva na planilha! ✓');
+    await loadFichas();
 
-  // Reset
-  document.getElementById('recipe-name').value = '';
-  document.getElementById('recipe-yield').value = '';
-  ingredients = [];
-  renderIngredients();
-  document.getElementById('result-section').style.display = 'none';
+    // Reset
+    document.getElementById('recipe-name').value = '';
+    document.getElementById('recipe-yield').value = '';
+    ingredients = [];
+    renderIngredients();
+    document.getElementById('result-section').style.display = 'none';
+  } catch (e) {
+    showToast('Erro ao salvar na planilha. Tente novamente.');
+  } finally {
+    saveBtn.textContent = '💾 Salvar ficha técnica';
+    saveBtn.disabled = false;
+  }
 }
 
 // ── UPDATE HOME ──
@@ -1087,8 +1137,8 @@ function updateHomePage() {
   `).join('');
 }
 
-// ── STOCK MANAGEMENT ──
-function addStock() {
+// ── STOCK MANAGEMENT (grava na aba Insumos da planilha) ──
+async function addStock() {
   const name  = document.getElementById('stock-name').value.trim();
   const price = parseFloat(document.getElementById('stock-price').value);
   const qty   = parseFloat(document.getElementById('stock-qty').value);
@@ -1098,17 +1148,18 @@ function addStock() {
     showToast('Preencha todos os campos'); return;
   }
 
-  const unitPrice = price / qty;
-  stockItems.push({ name, price, qty, unit, unitPrice });
-  renderStock();
-  showToast('Insumo cadastrado! ✓');
-
-  ['stock-name','stock-price','stock-qty'].forEach(id => document.getElementById(id).value = '');
+  try {
+    await apiPost({ action: 'add_insumo', nome: name, preco: price, qtd: qty, unidade: unit });
+    showToast('Insumo cadastrado na planilha! ✓');
+    await loadInsumos();
+    ['stock-name','stock-price','stock-qty'].forEach(id => document.getElementById(id).value = '');
+  } catch (e) {
+    showToast('Erro ao cadastrar. Verifique sua conexão.');
+  }
 }
 
 function removeStock(idx) {
-  stockItems.splice(idx, 1);
-  renderStock();
+  showToast('Para remover, edite direto na aba Insumos da planilha');
 }
 
 function renderStock() {
@@ -1147,15 +1198,12 @@ function showToast(msg) {
   setTimeout(() => t.classList.remove('show'), 2500);
 }
 
-// ── PRE-LOAD EXAMPLE DATA ──
-stockItems = [
-  { name: 'Farinha de trigo', price: 5.99, qty: 1000, unit: 'g', unitPrice: 0.00599 },
-  { name: 'Açúcar cristal',   price: 4.49, qty: 1000, unit: 'g', unitPrice: 0.00449 },
-  { name: 'Ovos',             price: 14.90, qty: 12,  unit: 'un', unitPrice: 1.2417  },
-  { name: 'Manteiga',         price: 12.90, qty: 200,  unit: 'g', unitPrice: 0.0645  },
-];
-renderStock();
-updateHomePage();
+// ── INICIALIZAÇÃO: carrega insumos e fichas direto da planilha ──
+async function initApp() {
+  document.getElementById('stat-recipes').textContent = '...';
+  await Promise.all([loadInsumos(), loadFichas()]);
+}
+initApp();
 </script>
 </body>
 </html>
