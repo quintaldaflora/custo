@@ -563,9 +563,12 @@
       </div>
     </div>
 
-    <div class="section-head">
-      <h2>Suas fichas</h2>
-      <p>Receitas salvas e precificadas</p>
+    <div class="section-head" style="display:flex; align-items:flex-end; justify-content:space-between;">
+      <div>
+        <h2>Suas fichas</h2>
+        <p>Receitas salvas e precificadas</p>
+      </div>
+      <button class="btn btn-outline btn-sm" onclick="loadFichas()" style="margin-bottom:4px;">🔄 Atualizar</button>
     </div>
 
     <div class="card" id="recipe-list-card">
@@ -721,9 +724,12 @@
 
   <!-- ═══════ PAGE: INGREDIENTES ═══════ -->
   <div class="page" id="page-ingredientes">
-    <div class="section-head">
-      <h2>Insumos</h2>
-      <p>Seu cadastro de ingredientes com preço</p>
+    <div class="section-head" style="display:flex; align-items:flex-end; justify-content:space-between;">
+      <div>
+        <h2>Insumos</h2>
+        <p>Seu cadastro de ingredientes com preço</p>
+      </div>
+      <button class="btn btn-outline btn-sm" onclick="loadInsumos()" style="margin-bottom:4px;">🔄 Atualizar</button>
     </div>
 
     <div class="card">
@@ -929,9 +935,27 @@ function tryLogin() {
 // ── API (Google Apps Script conectado à sua planilha) ──
 const API_URL = 'https://script.google.com/macros/s/AKfycbwSj_hSc8BwZrp688OqZmLyd-Dlfmev4AH6pqABWTUb8u85RVwF6dT6FXwWZmrwDWh_/exec';
 
-async function apiGet(action) {
-  const res = await fetch(`${API_URL}?action=${action}&token=${encodeURIComponent(AUTH_TOKEN)}`);
-  return res.json();
+function apiGet(action) {
+  // Mesmo motivo do apiPost: XMLHttpRequest evita o bug do Apps Script + fetch()
+  // que às vezes falha silenciosamente e deixa a lista aparecendo vazia no app
+  // (mesmo com os dados intactos e seguros na planilha).
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const url = `${API_URL}?action=${action}&token=${encodeURIComponent(AUTH_TOKEN)}`;
+    xhr.open('GET', url, true);
+    xhr.timeout = 60000;
+    xhr.onload = () => {
+      try {
+        resolve(JSON.parse(xhr.responseText));
+      } catch (e) {
+        console.error('Resposta não-JSON do Apps Script:', xhr.responseText.slice(0, 500));
+        reject(new Error('Resposta inesperada do servidor (status ' + xhr.status + ')'));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Falha de rede ao contatar a planilha. Verifique sua conexão e tente de novo.'));
+    xhr.ontimeout = () => reject(new Error('A planilha demorou demais para responder. Tente de novo.'));
+    xhr.send();
+  });
 }
 
 function apiPost(body) {
@@ -963,14 +987,25 @@ let stockItems = [];
 let savedRecipes = [];
 
 // ── LOAD DATA FROM SHEET ──
+async function apiGetWithRetry(action, tries = 2) {
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await apiGet(action);
+    } catch (e) {
+      if (i === tries - 1) throw e;
+      await new Promise(r => setTimeout(r, 800));
+    }
+  }
+}
+
 async function loadInsumos() {
   try {
-    const data = await apiGet('insumos');
+    const data = await apiGetWithRetry('insumos');
     stockItems = (data || []).map(i => ({
       id: i.id, name: i.nome, price: i.preco, qty: i.qtd, unit: i.unidade, unitPrice: i.custoUnit
     }));
   } catch (e) {
-    showToast('Não foi possível carregar os insumos da planilha');
+    showToast('Não foi possível carregar os insumos. Puxe a tela para atualizar.');
   }
   renderStock();
   populateIngredientSelect();
@@ -978,14 +1013,14 @@ async function loadInsumos() {
 
 async function loadFichas() {
   try {
-    const data = await apiGet('fichas');
+    const data = await apiGetWithRetry('fichas');
     savedRecipes = (data || []).map(f => ({
       id: f.id, name: f.nome, category: '', emoji: '🍳',
       price: f.precoVenda, unit: f.custoPorPorcao, total: f.custoTotal,
       yield: f.rendimento, date: ''
     }));
   } catch (e) {
-    showToast('Não foi possível carregar as fichas da planilha');
+    showToast('Não foi possível carregar as fichas. Puxe a tela para atualizar.');
   }
   updateHomePage();
 }
