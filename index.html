@@ -445,12 +445,14 @@
     background: var(--ink);
     color: white;
     padding: 10px 20px;
-    border-radius: 20px;
+    border-radius: 16px;
     font-size: 13px;
     font-weight: 500;
     opacity: 0;
     transition: all 0.25s;
-    white-space: nowrap;
+    white-space: normal;
+    max-width: 320px;
+    text-align: center;
     pointer-events: none;
     z-index: 100;
   }
@@ -932,15 +934,27 @@ async function apiGet(action) {
   return res.json();
 }
 
-async function apiPost(body) {
+function apiPost(body) {
   body.token = AUTH_TOKEN;
-  // Content-Type text/plain evita o preflight CORS que o Apps Script não responde
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(body)
+  // XMLHttpRequest evita um bug conhecido do Apps Script + fetch() em respostas
+  // demoradas, onde o navegador confunde um redirecionamento do Google com bloqueio de CORS
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', API_URL, true);
+    xhr.setRequestHeader('Content-Type', 'text/plain;charset=utf-8');
+    xhr.timeout = 60000;
+    xhr.onload = () => {
+      try {
+        resolve(JSON.parse(xhr.responseText));
+      } catch (e) {
+        console.error('Resposta não-JSON do Apps Script:', xhr.responseText.slice(0, 500));
+        reject(new Error('Resposta inesperada do servidor (status ' + xhr.status + ')'));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Falha de rede ao contatar a planilha. Verifique sua conexão e tente de novo.'));
+    xhr.ontimeout = () => reject(new Error('A planilha demorou demais para responder. Tente uma foto menor ou tente de novo.'));
+    xhr.send(JSON.stringify(body));
   });
-  return res.json();
 }
 
 // ── STATE ──
@@ -1363,13 +1377,17 @@ async function handleInvoiceUpload(event) {
     const base64 = await resizeImageToBase64(file);
     const result = await apiPost({ action: 'read_invoice', image: base64, mediaType: 'image/jpeg' });
     if (result.error) {
-      showToast(result.error);
+      console.error('Erro retornado pela API:', result);
+      showToast(result.error + (result.detalhe ? ' — veja o console (F12)' : ''));
+      if (result.detalhe) console.error('Detalhe:', result.detalhe);
+      if (result.bruto) console.error('Resposta bruta da IA:', result.bruto);
     } else {
       window._invoiceItems = result.itens || [];
       renderInvoiceReview(window._invoiceItems);
     }
   } catch (e) {
-    showToast('Erro ao ler a nota fiscal. Tente uma foto mais nítida.');
+    console.error('Exceção ao ler nota fiscal:', e);
+    showToast('Erro: ' + e.message);
   } finally {
     statusEl.style.display = 'none';
     event.target.value = '';
@@ -1494,7 +1512,9 @@ function showToast(msg) {
   const t = document.getElementById('toast');
   t.textContent = msg;
   t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 2500);
+  const duration = msg.length > 40 ? 5000 : 2500;
+  clearTimeout(window._toastTimer);
+  window._toastTimer = setTimeout(() => t.classList.remove('show'), duration);
 }
 
 // ── INICIALIZAÇÃO: carrega insumos e fichas direto da planilha ──
